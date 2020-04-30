@@ -8,9 +8,17 @@ function extractVideoURLs {
 		domain=$(echo $fqdn | awk -F. '{print$(NF-1)"."$NF}')
 		sld=$(echo $fqdn | awk -F. '{print $(NF-1)}') # Second level domain
 		if [ $sld = dailymotion ];then
-			\curl -qs ${url/www/api}/videos | jq -r "\"$urlBase/video/\"+.list[].id"
+			urlPrefix=${urlBase}/video
+			\curl -qs "${url/www/api}/videos" | jq -r '"'$urlPrefix/'"+.list[].id'
+		elif [ $sld = vimeo ];then
+			urlPrefix=$urlBase
+			channel="${url/*\//}"
+			\curl -qs $urlBase/api/v2/$channel/videos.json | jq -r '.[] | "'$urlPrefix/'"+(.id|tostring)'
+		elif [ $sld = youtube ];then
+			urlPrefix=$urlBase
+			\curl -qs "$url" | grep -w video | grep -oP 'href="\K/[^/][^ &"]+' | uniq | sed "s|^|$urlPrefix|"
 		else
-			\curl -qs $url | grep -w video | grep -oP 'href="\K/[^/][^ &"]+' | uniq | sed "s|^|$urlBase|"
+			:
 		fi
 	done
 }
