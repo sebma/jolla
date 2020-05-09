@@ -2,31 +2,61 @@
 
 #set -o nounset
 [ $BASH_VERSINFO -lt 4 ] && echo "=> [WARNING] BASH_VERSINFO = $BASH_VERSINFO then continuing in bash4 ..." && exec bash4 $0 "$@"
-[ $BASH_VERSINFO -ge 4 ] && declare -A colors=( [red]=$(tput setaf 1) [green]=$(tput setaf 2) [blue]=$(tput setaf 4) [cyan]=$(tput setaf 6) [yellow]=$(tput setaf 11) [yellowOnRed]=$(tput setaf 11)$(tput setab 1) [greenOnBlue]=$(tput setaf 2)$(tput setab 4) [yellowOnBlue]=$(tput setaf 11)$(tput setab 4) [cyanOnBlue]=$(tput setaf 6)$(tput setab 4) [whiteOnBlue]=$(tput setaf 7)$(tput setab 4) [redOnGrey]=$(tput setaf 1)$(tput setab 7) [blueOnGrey]=$(tput setaf 4)$(tput setab 7) )
+
+set_colors() {
+	[ $BASH_VERSINFO -ge 4 ] && declare -Ag colors=( [red]=$(tput setaf 1) [green]=$(tput setaf 2) [blue]=$(tput setaf 4) [cyan]=$(tput setaf 6) [yellow]=$(tput setaf 11) [yellowOnRed]=$(tput setaf 11)$(tput setab 1) [greenOnBlue]=$(tput setaf 2)$(tput setab 4) [yellowOnBlue]=$(tput setaf 11)$(tput setab 4) [cyanOnBlue]=$(tput setaf 6)$(tput setab 4) [whiteOnBlue]=$(tput setaf 7)$(tput setab 4) [redOnGrey]=$(tput setaf 1)$(tput setab 7) [blueOnGrey]=$(tput setaf 4)$(tput setab 7) )
+}
 
 LANG=C.UTF-8
 scriptBaseName=${0/*\//}
 scriptExtension=${0/*./}
 funcName=${scriptBaseName/.$scriptExtension/}
-youtube_dl="eval LANG=C.UTF-8 command youtube-dl" # i.e https://unix.stackexchange.com/questions/505733/add-locale-in-variable-for-command
+
+getAudioExtension () {
+	if [ $# != 1 ];then
+		echo "=> [$FUNCNAME] Usage: $FUNCNAME ffprobeAudioCodecName"
+		return 1
+	fi
+	
+	local acodec=$1
+	local audioExtension=unknown
+
+	if [ $BASH_VERSINFO -ge 4 ];then
+		declare -A audioExtension=( [libspeex]=spx [speex]=spx [opus]=opus [vorbis]=ogg [aac]=m4a [mp3]=mp3 [mp2]=mp2 [ac3]=ac3 [wmav2]=wma [pcm_dvd]=wav [pcm_s16le]=wav )
+		audioExtension=${audioExtension[$acodec]}
+	else
+		case $acodec in
+			libspeex|speex) audioExtension=spx;;
+			opus|mp2|mp3|ac3) audioExtension=$acodec;;
+			vorbis) audioExtension=ogg;;
+			aac) audioExtension=m4a;;
+			wmav2) audioExtension=wma;;
+			pcm_dvd|pcm_s16le) audioExtension=wav;;
+			*) audioExtension=unknown;;
+		esac
+	fi
+	echo $audioExtension
+}
 
 unset -f getRestrictedFilenamesFORMAT
 getRestrictedFilenamesFORMAT () {
 	trap 'rc=127;set +x;echo "=> $FUNCNAME: CTRL+C Interruption trapped.">&2;return $rc' INT
 
+	set_colors
+	local normal=$(tput sgr0)
+
 	if [ $# -le 1 ];then
-		echo "=> Usage : $scriptBaseName url1 url2 ..."
-		exit 1
+		echo "=> [$FUNCNAME] Usage : $scriptBaseName initialSiteVideoFormat url1 url2 ..."
+		return 1
 	fi
 
-	local ytdlExtraOptions="--add-metadata"
+	local ytdlExtraOptions=( --add-metadata )
+	local youtube_dl="eval LANG=C.UTF-8 command youtube-dl" # i.e https://unix.stackexchange.com/questions/505733/add-locale-in-variable-for-command
 	local translate=cat
 	local siteVideoFormat downloadOK=-1 extension fqdn fileSizeOnFS=0 remoteFileSize=0
 	local -i i=0
 	local -i j=0
 	local isLIVE=false
-	local ffmpeg="$(which ffmpeg) -hide_banner"
-	local ffprobe="$(which ffprobe) -hide_banner"
 	local jsonResults=null
 	local metadataURLFieldName=description
 	local embedThumbnail="--write-thumbnail"
@@ -37,15 +67,10 @@ getRestrictedFilenamesFORMAT () {
 	local ffmpegNormalLogLevel=repeat+error
 	local ffmpegInfoLogLevel=repeat+info
 	local ffmpegLogLevel=$ffmpegNormalLogLevel
-	local ffprobeJSON_Info=null
-	local videoContainer=null
-	local latestVideoStreamCodecName=null
-	local mimetype=null
 	local timestampFileRef=null
 	local domainStringForFilename=null
 	local fqdn=null domain=null sld=null
 	local errorLogFile=null
-	local youtube_dl_FileNamePattern=null
 	local scriptOptions=null
 	local initialSiteVideoFormat=null
 	local numberOfURLsToDownload=null
@@ -53,12 +78,25 @@ getRestrictedFilenamesFORMAT () {
 	local formatsIDs=null
 	local thumbnailExtension=null
 	local artworkFileName=null
+	local tool=null
+	local undebug="set +x"
 
-	echo $1 | grep -q -- "^-[a-z]" && scriptOptions=$1 && shift
-	echo $scriptOptions | \egrep -q -- "-x" && ytdlExtraOptions+=( -x )
-	echo $scriptOptions | \egrep -q -- "-v" && debug="set -x" && undebug="set +x"
-	echo $scriptOptions | \egrep -q -- "-vv" && debug="set -x" && undebug="set +x" && ytdlExtraOptions+=( -v )
-	echo $scriptOptions | \egrep -q -- "-vvv" && debug="set -x" && undebug="set +x" && ytdlExtraOptions+=( -v ) && ffmpegLogLevel=$ffmpegInfoLogLevel
+	for tool in ffmpeg grep ffprobe jq;do
+		local $tool="$(which $tool)"
+		if [ -z "${!tool}" ];then
+			echo "=> [$FUNCNAME] ERROR: $tool is required, you need to install it." >&2
+			return 2
+		fi
+	done
+
+	ffmpeg+=" -hide_banner"
+	ffprobe+=" -hide_banner"
+
+	echo $1 | $grep -q -- "^-[a-z]" && scriptOptions=$1 && shift
+	echo $scriptOptions | $grep -q -- "-x" && ytdlExtraOptions+=( -x )
+	echo $scriptOptions | $grep -q -- "-v" && debug="set -x"
+	echo $scriptOptions | $grep -q -- "-vv" && debug="set -x" && ytdlExtraOptions+=( -v )
+	echo $scriptOptions | $grep -q -- "-vvv" && debug="set -x" && ffmpegLogLevel=$ffmpegInfoLogLevel
 
 	initialSiteVideoFormat="$1"
 	shift
@@ -88,8 +126,8 @@ getRestrictedFilenamesFORMAT () {
 		youtube_dl_FileNamePattern="%(title)s__%(format_id)s__%(id)s__$domainStringForFilename.%(ext)s"
 
 		jsonResults=null
-		jsonResults=$(time command youtube-dl --restrict-filenames -f "$siteVideoFormat" -o "$youtube_dl_FileNamePattern" -j -- "$url" 2>$errorLogFile | jq -r .)
-		formatsIDs=( $(echo "$jsonResults" | jq -r .format_id | awk '!seen[$0]++') )
+		jsonResults=$(time command youtube-dl --restrict-filenames -f "$siteVideoFormat" -o "${youtube_dl_FileNamePattern}" -j -- "$url" 2>$errorLogFile | $jq -r .)
+		formatsIDs=( $(echo "$jsonResults" | $jq -r .format_id | awk '!seen[$0]++') ) # Remove duplicate lines i.e: https://stackoverflow.com/a/1444448/5649639
 		echo
 
 		grep -A1 ERROR: $errorLogFile >&2 && echo "=> \$? = $downloadOK" >&2 && continue || \rm $errorLogFile
@@ -99,54 +137,65 @@ getRestrictedFilenamesFORMAT () {
 			let j++
 			let numberOfFilesToDownload=$numberOfURLsToDownload*${#formatsIDs[@]}
 			$undebug
-			fileName=$(echo "$jsonResults"  | jq -n -r "first(inputs | select(.format_id==\"$formatID\"))._filename")
-			extension=$(echo "$jsonResults" | jq -n -r "first(inputs | select(.format_id==\"$formatID\")).ext")
-			thumbnailURL=$(echo "$jsonResults" | jq -n -r "first(inputs | select(.format_id==\"$formatID\")).thumbnail")
-			formatString=$(echo "$jsonResults"  | jq -n -r "first(inputs | select(.format_id==\"$formatID\")).format")
-			chosenFormatID=$(echo "$jsonResults"  | jq -n -r "first(inputs | select(.format_id==\"$formatID\")).format_id")
-			remoteFileSize=$(echo "$jsonResults" | jq -n -r "first(inputs | select(.format_id==\"$formatID\")).filesize" | sed "s/null/-1/")
-			isLIVE=$(echo "$jsonResults" | jq -n -r "first(inputs | select(.format_id==\"$formatID\")).is_live")
+			fileName=$(echo "$jsonResults"  | $jq -n -r "first(inputs | select(.format_id==\"$formatID\"))._filename")
+			extension=$(echo "$jsonResults" | $jq -n -r "first(inputs | select(.format_id==\"$formatID\")).ext")
+			thumbnailURL=$(echo "$jsonResults" | $jq -n -r "first(inputs | select(.format_id==\"$formatID\")).thumbnail")
+			formatString=$(echo "$jsonResults"  | $jq -n -r "first(inputs | select(.format_id==\"$formatID\")).format")
+			chosenFormatID=$(echo "$jsonResults"  | $jq -n -r "first(inputs | select(.format_id==\"$formatID\")).format_id")
+			streamDirectURL="$(echo "$jsonResults"  | $jq -n -r "first(inputs | select(.format_id==\"$formatID\")).url")"
+			remoteFileSize=$(echo "$jsonResults" | $jq -n -r "first(inputs | select(.format_id==\"$formatID\")).filesize" | sed "s/null/-1/")
+			isLIVE=$(echo "$jsonResults" | $jq -n -r "first(inputs | select(.format_id==\"$formatID\")).is_live")
+			ffprobeJSON_Stream_Info=$($ffprobe -hide_banner -v error -show_format -show_streams -print_format json "$streamDirectURL")
+			latestAudioStreamCodecName=$(echo "$ffprobeJSON_Stream_Info" | $jq -r '[ .streams[] | select(.codec_type=="audio") ][-1].codec_name')
 
 			thumbnailExtension=$(echo "${thumbnailURL/*\//}" | awk -F"[.]" '{print$2}')
 			[ -z "$thumbnailExtension" ] && thumbnailExtension=$(\curl -qs "$thumbnailURL" | file -bi - | awk -F ';' '{sub(".*/","",$1);print gensub("jpeg","jpg",1,$1)}')
 			[ -n "$thumbnailExtension" ] && artworkFileName=${fileName/.$extension/.$thumbnailExtension}
 
-			if [ $thumbnailerName = AtomicParsley ] && ! \curl -qs "$thumbnailURL" | file -b - | \grep -q JFIF;then # because of https://bitbucket.org/wez/atomicparsley/issues/63
+			[ "$debug" ] && echo "=> chosenFormatID = <$chosenFormatID>  fileName = <$fileName>  extension = <$extension>  isLIVE = <$isLIVE>  formatString = <$formatString> thumbnailURL = <$thumbnailURL> artworkFileName = <$artworkFileName>  latestAudioStreamCodecName = <$latestAudioStreamCodecName>" && echo
+
+			if [ $thumbnailerName = AtomicParsley ] && ! \curl -qs "$thumbnailURL" | file -b - | $grep -q JFIF;then #Because of https://bitbucket.org/wez/atomicparsley/issues/63
 				if \curl -qs "$thumbnailURL" -o "$artworkFileName.tmp";then
 					echo "=> Converting <$artworkFileName> to JPEG JFIF for AtomicParsley ..."
+					echo
 					convert -verbose "$artworkFileName.tmp" "$artworkFileName" && rm -f "$artworkFileName.tmp"
 					echo "=> Done."
 					echo
 				fi
 			fi
 
-			[ "$debug" ] && echo "=> chosenFormatID = <$chosenFormatID>  fileName = <$fileName>  extension = <$extension>  isLIVE = <$isLIVE>  formatString = <$formatString> thumbnailURL = <$thumbnailURL> artworkFileName = <$artworkFileName>" && echo
+			echo $formatString | $grep -v '+' | $grep -q "audio only" && ytdlExtraOptions+=( -x )
+
+			if echo "${ytdlExtraOptions[@]}" | $grep -qw -- "-x" ;then
+				extension=$(getAudioExtension $latestAudioStreamCodecName)
+				newFileName="${fileName/.*/.$extension}"
+			else
+				newFileName="$fileName"
+			fi
+
+			[ "$debug" ] && echo "=> newFileName = <$newFileName>" && echo
 
 			echo "=> Downloading <$url> using the <$chosenFormatID> $sld format ..."
 			echo
 
-			ytdlExtraOptions+=( --embed-subs --write-auto-sub --sub-lang=en,fr,es,de )
-			echo $formatString | \grep -v '+' | \grep -q "audio only" && ytdlExtraOptions+=( -x )
+			ytdlExtraOptions+=( --prefer-ffmpeg --restrict-filenames --embed-subs --write-auto-sub --sub-lang=en,fr,es,de )
 			if [ $isLIVE = true ];then
 				ytdlExtraOptions+=( --hls-use-mpegts )
 			else
 				ytdlExtraOptions+=( --hls-prefer-native )
 			fi
 
-			echo
 			$undebug
-			echo "=> ytdlExtraOptions = ${ytdlExtraOptions[@]}"
-			echo
+			[ "$debug" ] && echo "=> ytdlExtraOptions = ${ytdlExtraOptions[@]}" && echo
 
-			if [ -f "$fileName" ] && [ $isLIVE != true ]; then
-				echo "=> The file <$fileName> is already exists, comparing it's size with the remote file ..." 1>&2
-				echo
-				fileSizeOnFS=$(stat -c %s "$fileName" || echo 0)
+			if [ -f "$newFileName" ] && [ $isLIVE != true ]; then
+				echo "=> The file <$newFileName> is already exists, comparing it's size with the remote file ..." 1>&2
+				echo 1>&2
+				fileSizeOnFS=$(stat -c %s "$newFileName" || echo 0)
 				test $? != 0 && return
-				if [ ! -w "$fileName" ] || [ $fileSizeOnFS -ge $remoteFileSize ]; then
-					echo
-					echo "${colors[yellowOnBlue]}=> The file <$fileName> is already downloaded ang greater or equal to remote file, skipping ...$normal" 1>&2
-					echo
+				if [ ! -w "$newFileName" ] || [ $fileSizeOnFS -ge $remoteFileSize ]; then
+					echo "${colors[yellowOnBlue]}=> The file <$newFileName> is already downloaded and is greater or equal to remote file, skipping ...$normal" 1>&2
+#					echo 1>&2
 					continue
 				fi
 			fi
@@ -161,8 +210,6 @@ getRestrictedFilenamesFORMAT () {
 			echo
 			printf "=> Starting youtube-dl at %s ...\n" "$(LC_MESSAGES=en date)"
 			echo
-			echo "=> ytdlExtraOptions = ${ytdlExtraOptions[@]}"
-			echo
 			errorLogFile="youtube-dl_errors_$$.log"
 			$debug
 			time LANG=C.UTF-8 command youtube-dl -o "$fileName" -f "$chosenFormatID" "${ytdlExtraOptions[@]}" "$url" $embedThumbnail 2>$errorLogFile
@@ -173,79 +220,20 @@ getRestrictedFilenamesFORMAT () {
 
 			grep -A1 ERROR: $errorLogFile >&2 && echo "=> \$? = $downloadOK" >&2 && continue || \rm $errorLogFile
 
-			if echo $formatString | \grep -v '+' | \grep -q "audio only";then
-				case $extension in
-					webm) extension=opus && fileName="${fileName/.webm/.opus}" ;;
-					*) ;;
-				esac
+			if echo "${ytdlExtraOptions[@]}" | $grep -qw -- "-x" ;then
+				extension=$(getAudioExtension $latestAudioStreamCodecName)
+				fileName="${fileName/.*/.$extension}"
 			fi
 
 			fileSizeOnFS=$(stat -c %s "$fileName" || echo 0)
-			ffprobeJSON_Info=$($ffprobe -hide_banner -v error -show_format -show_streams -print_format json "$fileName")
-
-			videoContainer=$(echo $ffprobeJSON_Info | jq -r .format.format_name | cut -d, -f1)
-#			numberOfVideoStreams=$(echo $ffprobeJSON_Info | jq -r '[ .streams[] | select(.codec_type=="video") ] | length'
-			latestVideoStreamCodecName=$(echo $ffprobeJSON_Info | jq -r '[ .streams[] | select(.codec_type=="video") ][-1].codec_name')
-
-			major_brand=$(echo $ffprobeJSON_Info | jq -r .format.tags.major_brand)
-
-			[ "$debug" ] && echo "=> videoContainer = <$videoContainer>  latestVideoStreamCodecName = <$latestVideoStreamCodecName> major_brand = <$major_brand>" && echo
-
 			if [ $fileSizeOnFS -ge $remoteFileSize ] || [ $downloadOK = 0 ]; then
-				if [ -s "$artworkFileName" ] && [ "$latestVideoStreamCodecName" != mjpeg ] && [ "$latestVideoStreamCodecName" != png ];then
-					mimetype=$(file -bi "$artworkFileName" | cut -d';' -f1)
-					timestampFileRef=$(mktemp) && touch -r "$fileName" $timestampFileRef
-					if [ $videoContainer = mov ];then
-						echo "[ffmpeg] Adding thumbnail to '$fileName'"
-						[ $major_brand = M4A ] && disposition_stream_specifier=v:0 || disposition_stream_specifier=v:1
-						$ffmpeg -loglevel $ffmpegLogLevel -i "$fileName" -i "$artworkFileName" -map 0 -map 1 -c copy -disposition:$disposition_stream_specifier attached_pic "${fileName/.$extension/_NEW.$extension}"
-						retCode=$?
-						if [ $retCode = 0 ];then
-							sync && mv "${fileName/.$extension/_NEW.$extension}" "$fileName" && rm "$artworkFileName" && downloadOK=0
-						else
-							set -x
-							$ffmpeg -loglevel $ffmpegInfoLogLevel -i "$fileName" -i "$artworkFileName" -map 0 -map 1 -c copy -disposition:$disposition_stream_specifier attached_pic "${fileName/.$extension/_NEW.$extension}"
-							set +x
-							\rm "${fileName/.$extension/_NEW.$extension}"
-						fi
-					elif [ $videoContainer = mp3 ];then
-						echo "[ffmpeg] Adding thumbnail to '$fileName'"
-						$ffmpeg -loglevel $ffmpegLogLevel -i "$fileName" -i "$artworkFileName" -map 0 -map 1 -c copy -map_metadata 0 "${fileName/.$extension/_NEW.$extension}"
-						retCode=$?
-						if [ $retCode = 0 ];then
-							sync && mv "${fileName/.$extension/_NEW.$extension}" "$fileName" && rm "$artworkFileName" && downloadOK=0
-						else
-							set -x
-							$ffmpeg -loglevel $ffmpegInfoLogLevel -i "$fileName" -i "$artworkFileName" -map 0 -map 1 -c copy -map_metadata 0 "${fileName/.$extension/_NEW.$extension}"
-							set +x
-							\rm "${fileName/.$extension/_NEW.$extension}"
-						fi
-					elif [ $videoContainer = matroska ];then
-						echo "[ffmpeg] Adding thumbnail to '$fileName'"
-						$ffmpeg -loglevel $ffmpegLogLevel -i "$fileName" -map 0 -c copy -attach "$artworkFileName" -metadata:s:t mimetype=$mimetype "${fileName/.$extension/_NEW.$extension}"
-						retCode=$?
-						if [ $retCode = 0 ];then
-							sync && mv "${fileName/.$extension/_NEW.$extension}" "$fileName" && rm "$artworkFileName" && downloadOK=0
-						else
-							set -x
-							$ffmpeg -loglevel $ffmpegInfoLogLevel -i "$fileName" -map 0 -c copy -attach "$artworkFileName" -metadata:s:t mimetype=$mimetype "${fileName/.$extension/_NEW.$extension}"
-							set +x
-							\rm "${fileName/.$extension/_NEW.$extension}"
-						fi
-					elif [ $videoContainer = ogg ];then
-# Complicated with the "METADATA_BLOCK_PICTURE" ogg according to https://superuser.com/a/706808/528454 and https://xiph.org/flac/format.html#metadata_block_picture use another tool instead
-						echo "=> ADDING COVER TO THE OGG CONTAINER IS NOT IMPLEMENTED YET"
-						\rm "$artworkFileName"
-						downloadOK=0
-					fi
-					touch -r $timestampFileRef "$fileName" && \rm $timestampFileRef
-				fi
+				addThumbnail2media "$fileName" "$artworkFileName"
 			else
 				time LANG=C.UTF-8 command youtube-dl -o $fileName -f "$chosenFormatID" "$url" 2>$errorLogFile
 				downloadOK=$?
 				echo
 
-				egrep -A1 'ERROR:.*' $errorLogFile >&2 && echo "=> \$? = $downloadOK" >&2 && return $downloadOK || \rm $errorLogFile
+				$grep -A1 'ERROR:.*' $errorLogFile >&2 && echo "=> \$? = $downloadOK" >&2 && return $downloadOK || \rm $errorLogFile
 			fi
 			$undebug
 
@@ -267,6 +255,89 @@ getRestrictedFilenamesFORMAT () {
 	sync
 	set +x
 	return $downloadOK
+}
+
+addThumbnail2media() {
+	local scriptOptions=null
+	echo $1 | \grep -q -- "^-[a-z]" && scriptOptions=$1 && shift
+
+	if [ $# != 2 ];then
+		echo "=> Usage: $FUNCNAME [-v] mediaFile artworkFile" 1>&2
+		exit 1
+	fi
+
+	echo $scriptOptions | \grep -q -- "-v" && debug="set -x"
+	local fileName="$1"
+	local artworkFileName="$2"
+
+	local ffmpeg="$(which ffmpeg)"
+	local ffprobe="$(which ffprobe)"
+	local jq="$(which jq)"
+
+	ffmpeg+=" -hide_banner"
+	ffprobe+=" -hide_banner"
+
+	local ffmpegNormalLogLevel=repeat+error
+	local ffmpegInfoLogLevel=repeat+info
+	local ffmpegLogLevel=$ffmpegNormalLogLevel
+
+	local ffprobeJSON_File_Info=$($ffprobe -v error -show_format -show_streams -print_format json "$fileName")
+#	numberOfVideoStreams=$(echo $ffprobeJSON_File_Info | $jq -r '[ .streams[] | select(.codec_type=="video") ] | length'
+	local latestVideoStreamCodecName=$(echo $ffprobeJSON_File_Info | $jq -r '[ .streams[] | select(.codec_type=="video") ][-1].codec_name')
+
+	local videoContainer=$(echo $ffprobeJSON_File_Info | $jq -r .format.format_name | cut -d, -f1)
+	local major_brand=$(echo $ffprobeJSON_File_Info | $jq -r .format.tags.major_brand)
+
+	[ "$debug" ] && echo "=> videoContainer = <$videoContainer>  latestVideoStreamCodecName = <$latestVideoStreamCodecName> major_brand = <$major_brand>" && echo
+
+	if [ -s "$artworkFileName" ] && [ "$latestVideoStreamCodecName" != mjpeg ] && [ "$latestVideoStreamCodecName" != png ];then
+		timestampFileRef=$(mktemp) && touch -r "$fileName" $timestampFileRef
+		if [ $videoContainer = mov ];then
+			echo "[ffmpeg] Adding thumbnail to '$fileName'"
+			[ $major_brand = M4A ] && disposition_stream_specifier=v:0 || disposition_stream_specifier=v:1
+			$ffmpeg -loglevel $ffmpegLogLevel -i "$fileName" -i "$artworkFileName" -map 0 -map 1 -c copy -disposition:$disposition_stream_specifier attached_pic "${fileName/.$extension/_NEW.$extension}"
+			retCode=$?
+			if [ $retCode = 0 ];then
+				sync && mv "${fileName/.$extension/_NEW.$extension}" "$fileName" && rm "$artworkFileName" && downloadOK=0
+			else
+				set -x
+				$ffmpeg -loglevel $ffmpegInfoLogLevel -i "$fileName" -i "$artworkFileName" -map 0 -map 1 -c copy -disposition:$disposition_stream_specifier attached_pic "${fileName/.$extension/_NEW.$extension}"
+				set +x
+				\rm "${fileName/.$extension/_NEW.$extension}"
+			fi
+		elif [ $videoContainer = mp3 ];then
+			echo "[ffmpeg] Adding thumbnail to '$fileName'"
+			$ffmpeg -loglevel $ffmpegLogLevel -i "$fileName" -i "$artworkFileName" -map 0 -map 1 -c copy -map_metadata 0 "${fileName/.$extension/_NEW.$extension}"
+			retCode=$?
+			if [ $retCode = 0 ];then
+				sync && mv "${fileName/.$extension/_NEW.$extension}" "$fileName" && rm "$artworkFileName" && downloadOK=0
+			else
+				set -x
+				$ffmpeg -loglevel $ffmpegInfoLogLevel -i "$fileName" -i "$artworkFileName" -map 0 -map 1 -c copy -map_metadata 0 "${fileName/.$extension/_NEW.$extension}"
+				set +x
+				\rm "${fileName/.$extension/_NEW.$extension}"
+			fi
+		elif [ $videoContainer = matroska ];then
+			echo "[ffmpeg] Adding thumbnail to '$fileName'"
+			mimetype=$(file -bi "$artworkFileName" | cut -d';' -f1)
+			$ffmpeg -loglevel $ffmpegLogLevel -i "$fileName" -map 0 -c copy -attach "$artworkFileName" -metadata:s:t mimetype=$mimetype "${fileName/.$extension/_NEW.$extension}"
+			retCode=$?
+			if [ $retCode = 0 ];then
+				sync && mv "${fileName/.$extension/_NEW.$extension}" "$fileName" && rm "$artworkFileName" && downloadOK=0
+			else
+				set -x
+				$ffmpeg -loglevel $ffmpegInfoLogLevel -i "$fileName" -map 0 -c copy -attach "$artworkFileName" -metadata:s:t mimetype=$mimetype "${fileName/.$extension/_NEW.$extension}"
+				set +x
+				\rm "${fileName/.$extension/_NEW.$extension}"
+			fi
+		elif [ $videoContainer = ogg ];then
+# Complicated with the "METADATA_BLOCK_PICTURE" ogg according to https://superuser.com/a/706808/528454 and https://xiph.org/flac/format.html#metadata_block_picture use another tool instead
+			echo "=> ADDING COVER TO THE OGG CONTAINER IS NOT IMPLEMENTED YET"
+			\rm "$artworkFileName"
+			downloadOK=0
+		fi
+		touch -r $timestampFileRef "$fileName" && \rm $timestampFileRef
+	fi
 }
 
 bestFormats="bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best[ext=webm]/best[ext=avi]/best[ext=mov]/best[ext=flv]"
