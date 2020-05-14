@@ -12,32 +12,6 @@ scriptBaseName=${0/*\//}
 scriptExtension=${0/*./}
 funcName=${scriptBaseName/.$scriptExtension/}
 
-getAudioExtension () {
-	if [ $# != 1 ];then
-		echo "=> [$FUNCNAME] Usage: $FUNCNAME ffprobeAudioCodecName" 1>&2
-		return 1
-	fi
-	
-	local acodec=$1
-	local audioExtension=unknown
-
-	if [ $BASH_VERSINFO -ge 4 ];then
-		declare -A audioExtension=( [libspeex]=spx [speex]=spx [opus]=opus [vorbis]=ogg [aac]=m4a [mp3]=mp3 [mp2]=mp2 [ac3]=ac3 [wmav2]=wma [pcm_dvd]=wav [pcm_s16le]=wav )
-		audioExtension=${audioExtension[$acodec]}
-	else
-		case $acodec in
-			libspeex|speex) audioExtension=spx;;
-			opus|mp2|mp3|ac3) audioExtension=$acodec;;
-			vorbis) audioExtension=ogg;;
-			aac) audioExtension=m4a;;
-			wmav2) audioExtension=wma;;
-			pcm_dvd|pcm_s16le) audioExtension=wav;;
-			*) audioExtension=unknown;;
-		esac
-	fi
-	echo $audioExtension
-}
-
 unset -f getRestrictedFilenamesFORMAT
 getRestrictedFilenamesFORMAT () {
 	trap 'rc=127;set +x;echo "=> $FUNCNAME: CTRL+C Interruption trapped.">&2;exit $rc' INT
@@ -97,6 +71,7 @@ getRestrictedFilenamesFORMAT () {
 
 	echo $1 | $grep -q -- "^-[a-z]" && scriptOptions=$1 && shift
 	echo $scriptOptions | $grep -q -- "-x" && ytdlInitialOptions+=( -x )
+	echo $scriptOptions | $grep -q -- "-p" && playlistFileName=$2 && shift 2
 	echo $scriptOptions | $grep -q -- "-v" && debug="set -x"
 	echo $scriptOptions | $grep -q -- "-vv" && debug="set -x" && ytdlInitialOptions+=( -v )
 	echo $scriptOptions | $grep -q -- "-vvv" && debug="set -x" && ffmpegLogLevel=$ffmpegInfoLogLevel
@@ -136,6 +111,8 @@ getRestrictedFilenamesFORMAT () {
 
 		$grepColor -A1 ERROR: $errorLogFile >&2 && echo "=> \$? = $downloadOK" >&2 && echo >&2 && continue || \rm $errorLogFile
 
+		test -n "$playlistFileName" && echo '#EXTM3U' > "$playlistFileName"
+
 		time for formatID in "${formatsIDs[@]}"
 		do
 			let j++
@@ -149,6 +126,12 @@ getRestrictedFilenamesFORMAT () {
 			streamDirectURL="$(echo "$jsonResults"  | $jq -n -r "first(inputs | select(.format_id==\"$formatID\")).url")"
 			remoteFileSize=$(echo "$jsonResults" | $jq -n -r "first(inputs | select(.format_id==\"$formatID\")).filesize" | sed "s/null/-1/")
 			isLIVE=$(echo "$jsonResults" | $jq -n -r "first(inputs | select(.format_id==\"$formatID\")).is_live")
+
+			# To create an M3U file
+			read title duration webpage_url <<< $(echo "$jsonResults"  | $jq -n -r "first(inputs | select(.format_id==\"$formatID\")) | .title, .duration, .webpage_url")
+			duration=$($grep '^[0-9]*' <<< $duration || echo -1)
+
+			test -n "$playlistFileName" && printf "#EXTINF:$duration,$title\n$webpage_url\n" >> "$playlistFileName"
 
 			ffprobeJSON_Stream_Info=$($ffprobe -hide_banner -v error -show_format -show_streams -print_format json "$streamDirectURL")
 			firstAudioStreamCodecName=$(echo "$ffprobeJSON_Stream_Info" | $jq -r '[ .streams[] | select(.codec_type=="audio") ][0].codec_name')
@@ -264,6 +247,31 @@ getRestrictedFilenamesFORMAT () {
 	sync
 	set +x
 	return $downloadOK
+}
+getAudioExtension () {
+	if [ $# != 1 ];then
+		echo "=> [$FUNCNAME] Usage: $FUNCNAME ffprobeAudioCodecName" 1>&2
+		return 1
+	fi
+
+	local acodec=$1
+	local audioExtension=unknown
+
+	if [ $BASH_VERSINFO -ge 4 ];then
+		declare -A audioExtension=( [libspeex]=spx [speex]=spx [opus]=opus [vorbis]=ogg [aac]=m4a [mp3]=mp3 [mp2]=mp2 [ac3]=ac3 [wmav2]=wma [pcm_dvd]=wav [pcm_s16le]=wav )
+		audioExtension=${audioExtension[$acodec]}
+	else
+		case $acodec in
+			libspeex|speex) audioExtension=spx;;
+			opus|mp2|mp3|ac3) audioExtension=$acodec;;
+			vorbis) audioExtension=ogg;;
+			aac) audioExtension=m4a;;
+			wmav2) audioExtension=wma;;
+			pcm_dvd|pcm_s16le) audioExtension=wav;;
+			*) audioExtension=unknown;;
+		esac
+	fi
+	echo $audioExtension
 }
 addURL2mp4Metadata() {
 	if [ $# != 2 ];then
