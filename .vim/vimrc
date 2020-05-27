@@ -6,7 +6,6 @@ set listchars+=eol:¶
 "vim --version | grep "\+multi_byte"
 set listchars+=nbsp:☠
 set title
-"set nopaste
 set nohls autoindent
 set noexpandtab tabstop=4 shiftwidth=4
 syntax on
@@ -21,6 +20,10 @@ nmap <F8> :TagbarToggle<CR>
 "nnoremap / /\v # enable Extended Regular Expression search
 "vnoremap / /\v
 
+function SortMyAliases()
+	:1
+	:/^alias /,$-3sort u
+endfunction
 function SortBashFunctionsByName()
 	:g/^function /,/^}$/-1 s/\n/<linefeed>/
 	:sort /^function /
@@ -60,7 +63,6 @@ Plug 'goerz/ipynb_notedown.vim'
 Plug 'ivanov/vim-ipython'
 call plug#end()
 
-set paste
 set ruler
 set modeline
 set tags+=./tags;
