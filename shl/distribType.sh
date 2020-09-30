@@ -8,19 +8,19 @@ distribType ()
 
 	distribName=$(distribName.sh | awk '{print tolower($0)}')
 
-		if [ $osFamily = Linux ]; then
-			case $distribName in
-				sailfishos|rhel|fedora|centos) distribType=redhat ;;
-				ubuntu) distribType=debian;;
-				*) distribType=$distribName ;;
-			esac
-		else
-			if [ $osFamily = Darwin ]; then
-				distribType=Darwin
-			else
-				distribType=$osFamily
-			fi
-		fi
+	if [ $osFamily = Linux ]; then
+		case $distribName in
+			sailfishos|rhel|fedora|centos) distribType=redhat ;;
+			ubuntu) distribType=debian;;
+			*) distribType=$distribName ;;
+		esac
+	elif [ $osFamily = Darwin ]; then
+			distribType=Darwin
+	elif [ $osFamily = Android ]; then
+			distribType=Android
+	else
+		which bash >/dev/null 2>&1 && distribType=$(bash -c 'echo $OSTYPE') || distribType=$osFamily
+	fi
 
 	echo $distribType
 }
