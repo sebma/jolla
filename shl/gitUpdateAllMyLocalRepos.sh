@@ -3,18 +3,17 @@
 gitUpdateAllMyLocalRepos ()
 {
 	local find="$(which find)"
-	echo $OSTYPE | grep -q android && local osFamily=Android || local osFamily=$(uname -s)
+	local remoteRepoUrl=""
+	echo $OSTYPE | grep -q android && local osFamily=Android || local osFamily=$(uname -s) # The bash interpreter is needed for it sets the OSTYPE variable
 	[ $osFamily = Darwin ] && find=gfind
 	local dir=""
 	$find ~ -maxdepth 2 -type d -name .git | while read dir; do
 		cd $dir/..
-		echo "=> Updating <$dir> local repo. ..." 1>&2
-		git config --local remote.origin.url
-		git pull
+		remoteRepoUrl=$(git config --local remote.origin.url)
+		test -n "$remoteRepoUrl" && echo "=> Updating <$dir> repo. from <$remoteRepoUrl> repo. ..." 1>&2 && git pull && sync
 		cd - > /dev/null
 		echo
 	done
-	unset dir
 }
 
 gitUpdateAllMyLocalRepos
