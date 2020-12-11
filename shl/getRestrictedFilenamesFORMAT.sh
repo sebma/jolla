@@ -54,6 +54,7 @@ getRestrictedFilenamesFORMAT () {
 	local thumbnailExtension=null
 	local artworkFileName=null
 	local tool=null
+	local debug="set +x"
 	local undebug="set +x"
 
 	for tool in ffmpeg grep ffprobe jq;do
@@ -94,11 +95,7 @@ getRestrictedFilenamesFORMAT () {
 		sld=$(echo $fqdn | awk -F '.' '{print $(NF-1)}')
 		case $sld in
 #			facebook) siteVideoFormat=$(echo $initialSiteVideoFormat+m4a | \sed -E "s/^(\(?)\w+/\1bestvideo/g") ;;
-#			facebook) ytdlInitialOptions+=( --force-generic-extractor ); siteVideoFormat=$initialSiteVideoFormat;;
-			facebook) siteVideoFormat=$initialSiteVideoFormat;;
-			*)
-				siteVideoFormat=$initialSiteVideoFormat
-			;;
+			*) siteVideoFormat=$initialSiteVideoFormat ;;
 		esac
 		formats=( $(echo $siteVideoFormat | \sed "s/,/ /g") )
 
@@ -108,6 +105,8 @@ getRestrictedFilenamesFORMAT () {
 
 		jsonResults=null
 		ytdlExtraOptions=( "${ytdlInitialOptions[@]}" )
+		echo "$url" | grep -q /live$ && ytdlExtraOptions+=( --playlist-items 1 )
+
 		jsonResults=$(time command youtube-dl --restrict-filenames -f "$siteVideoFormat" -o "${youtube_dl_FileNamePattern}" -j "${ytdlExtraOptions[@]}" -- "$url" 2>$errorLogFile | $jq -r .)
 		formatsIDs=( $(echo "$jsonResults" | $jq -r .format_id | awk '!seen[$0]++') ) # Remove duplicate lines i.e: https://stackoverflow.com/a/1444448/5649639
 		echo
@@ -131,7 +130,7 @@ getRestrictedFilenamesFORMAT () {
 			isLIVE=$(echo "$jsonResults" | $jq -n -r "first(inputs | select(.format_id==\"$formatID\")).is_live")
 
 			# To create an M3U file
-			read title duration webpage_url <<< $(echo "$jsonResults"  | $jq -n -r "first(inputs | select(.format_id==\"$formatID\")) | .title, .duration, .webpage_url")
+			IFS=$'\n' read -d "" duration webpage_url title <<< $(echo "$jsonResults"  | $jq -r ".duration, .webpage_url, .title")
 			duration=$($grep '^[0-9]*' <<< $duration || echo -1)
 
 			test -n "$playlistFileName" && printf "#EXTINF:$duration,$title\n$webpage_url\n" >> "$playlistFileName"
@@ -143,7 +142,7 @@ getRestrictedFilenamesFORMAT () {
 			[ -z "$thumbnailExtension" ] && thumbnailExtension=$(\curl -qs "$thumbnailURL" | file -bi - | awk -F ';' '{sub(".*/","",$1);print gensub("jpeg","jpg",1,$1)}')
 			[ -n "$thumbnailExtension" ] && artworkFileName=${fileName/.$extension/.$thumbnailExtension}
 
-			[ "$debug" ] && echo "=> chosenFormatID = <$chosenFormatID>  fileName = <$fileName>  extension = <$extension>  isLIVE = <$isLIVE>  formatString = <$formatString> thumbnailURL = <$thumbnailURL> artworkFileName = <$artworkFileName>  firstAudioStreamCodecName = <$firstAudioStreamCodecName>" && echo
+			[ "$debug" ] && echo "=> chosenFormatID = <$chosenFormatID>  fileName = <$fileName>  extension = <$extension>  isLIVE = <$isLIVE>  formatString = <$formatString> thumbnailURL = <$thumbnailURL> artworkFileName = <$artworkFileName>  firstAudioStreamCodecName = <$firstAudioStreamCodecName> webpage_url = <$webpage_url> title = <$title> duration = <$duration>" && echo
 
 			if [ $thumbnailerName = AtomicParsley ] && ! \curl -qs "$thumbnailURL" | file -b - | $grep -q JFIF;then #Because of https://bitbucket.org/wez/atomicparsley/issues/63
 				if \curl -qs "$thumbnailURL" -o "$artworkFileName.tmp";then
@@ -168,6 +167,7 @@ getRestrictedFilenamesFORMAT () {
 
 			[ "$debug" ] && echo "=> newFileName = <$newFileName>" && echo
 
+			[ $isLIVE = true ] && url="$webpage_url"
 			echo "=> Downloading <$url> using the <$chosenFormatID> $sld format ..."
 			echo
 
