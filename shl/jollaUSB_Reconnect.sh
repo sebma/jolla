@@ -4,7 +4,7 @@ set -o nounset
 set -o errexit
 
 if   echo $distribID | egrep "centos|rhel|fedora" -q;then
-	ipcalc=""
+	ipcalc="ipcalc -b"
 elif echo $distribID | egrep "debian|ubuntu" -q;then
 	ipcalc=ipcalc
 fi
