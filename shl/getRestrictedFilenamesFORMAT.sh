@@ -4,7 +4,15 @@
 [ $BASH_VERSINFO -lt 4 ] && echo "=> [WARNING] BASH_VERSINFO = $BASH_VERSINFO then continuing in bash4 ..." && exec bash4 $0 "$@"
 
 set_colors() {
-	[ $BASH_VERSINFO -ge 4 ] && declare -Ag colors=( [red]=$(tput setaf 1) [green]=$(tput setaf 2) [blue]=$(tput setaf 4) [cyan]=$(tput setaf 6) [yellow]=$(tput setaf 11) [yellowOnRed]=$(tput setaf 11)$(tput setab 1) [greenOnBlue]=$(tput setaf 2)$(tput setab 4) [yellowOnBlue]=$(tput setaf 11)$(tput setab 4) [cyanOnBlue]=$(tput setaf 6)$(tput setab 4) [whiteOnBlue]=$(tput setaf 7)$(tput setab 4) [redOnGrey]=$(tput setaf 1)$(tput setab 7) [blueOnGrey]=$(tput setaf 4)$(tput setab 7) )
+	local normal=$(tput sgr0)
+	if [ $BASH_VERSINFO -ge 4 ];then
+		export escapeChar=$'\e'
+		export blinkOff=${escapeChar}'[25m'
+		declare -Ag effects=( [bold]=$(tput bold) [dim]=$(tput dim) [italics]=$(tput sitm) [underlined]=$(tput smul) [blink]=$(tput blink) [reverse]=$(tput rev) [hidden]=$(tput invis) [blinkOff]=$blinkOff )
+		declare -Ag colors=( [red]=$(tput setaf 1) [green]=$(tput setaf 2) [blue]=$(tput setaf 4) [cyan]=$(tput setaf 6) [yellow]=$(tput setaf 11) [yellowOnRed]=$(tput setaf 11)$(tput setab 1) [greenOnBlue]=$(tput setaf 2)$(tput setab 4) [yellowOnBlue]=$(tput setaf 11)$(tput setab 4) [cyanOnBlue]=$(tput setaf 6)$(tput setab 4) [whiteOnBlue]=$(tput setaf 7)$(tput setab 4) [redOnGrey]=$(tput setaf 1)$(tput setab 7) [blueOnGrey]=$(tput setaf 4)$(tput setab 7) )
+	else
+		export escapeChar=$'\033'
+	fi
 }
 
 LANG=C.UTF-8
@@ -17,7 +25,6 @@ getRestrictedFilenamesFORMAT () {
 	trap 'rc=127;set +x;echo "=> $FUNCNAME: CTRL+C Interruption trapped.">&2;exit $rc' INT
 
 	set_colors
-	local normal=$(tput sgr0)
 
 	if [ $# -le 1 ];then
 		echo "=> [$FUNCNAME] Usage : $scriptBaseName initialSiteVideoFormat url1 url2 ..." 1>&2
@@ -26,19 +33,21 @@ getRestrictedFilenamesFORMAT () {
 
 	local ytdlExtraOptions=()
 	local ytdlInitialOptions=()
-	local youtube_dl="eval LANG=C.UTF-8 command youtube-dl" # i.e https://unix.stackexchange.com/questions/505733/add-locale-in-variable-for-command
 	local translate=cat
 	local siteVideoFormat downloadOK=-1 extension fqdn fileSizeOnFS=0 remoteFileSize=0
+	local protocolForDownload=null
 	local -i i=0
 	local -i j=0
+	local acodec=null
 	local isLIVE=false
 	local jsonResults=null
+	local channel_id=null
+	local channel_url=null
 	local metadataURLFieldName=description
 	local embedThumbnail="--write-thumbnail"
 	local youtube_dl_FileNamePattern="%(title)s__%(format_id)s__%(id)s__%(extractor)s.%(ext)s"
 	local thumbnailerName=$(basename $(which AtomicParsley 2>/dev/null || which ffmpeg 2>/dev/null))
 	local thumbnailerExecutable=$(which $thumbnailerName 2>/dev/null)
-	local retCode=-1
 	local ffmpegNormalLogLevel=repeat+error
 	local ffmpegInfoLogLevel=repeat+info
 	local ffmpegLogLevel=$ffmpegNormalLogLevel
@@ -53,9 +62,18 @@ getRestrictedFilenamesFORMAT () {
 	local formatsIDs=null
 	local thumbnailExtension=null
 	local artworkFileName=null
+	local userAgent=null
 	local tool=null
 	local debug="set +x"
 	local undebug="set +x"
+	local downloader=yt-dlp
+
+	startTime="$(LC_MESSAGES=en date)"
+
+#	local youtube_dl="eval LANG=C.UTF-8 command youtube-dl" # i.e https://unix.stackexchange.com/questions/505733/add-locale-in-variable-for-command
+	videoDownloader () {
+		LANG=C.UTF-8 $downloader "$@"
+	}
 
 	for tool in ffmpeg grep ffprobe jq;do
 		local $tool="$(which $tool)"
@@ -71,7 +89,10 @@ getRestrictedFilenamesFORMAT () {
 	grep --help | grep -q -- --color && grepColor+=" --color"
 
 	echo $1 | $grep -q -- "^-[a-z]" && scriptOptions=$1 && shift
+
+	echo $scriptOptions | $grep -q -- "-k" && ytdlInitialOptions+=( -k )
 	echo $scriptOptions | $grep -q -- "-x" && ytdlInitialOptions+=( -x )
+	echo $scriptOptions | $grep -q -- "-y" && downloader=yt-dl
 	echo $scriptOptions | $grep -q -- "-p" && playlistFileName=$2 && shift 2
 	echo $scriptOptions | $grep -q -- "-v" && debug="set -x"
 	echo $scriptOptions | $grep -q -- "-vv" && debug="set -x" && ytdlInitialOptions+=( -v )
@@ -80,7 +101,10 @@ getRestrictedFilenamesFORMAT () {
 	initialSiteVideoFormat="$1"
 	shift
 
-	youtube-dl --rm-cache
+	echo "=> Started <$scriptBaseName> on $@ at : $startTime ..."
+	echo
+
+	time videoDownloader --ignore-config --rm-cache
 	for url
 	do
 		let i++
@@ -90,24 +114,28 @@ getRestrictedFilenamesFORMAT () {
 		echo
 		echo $url | egrep -wq "https?:" || url=https://www.youtube.com/watch?v=$url
 		fqdn=$(echo "$url" | cut -d/ -f3)
+		[ $fqdn = youtu.be ] && fqdn=www.youtube.com
 		domain=$(echo $fqdn | awk -F. '{print$(NF-1)"."$NF}')
+		sld=$(echo $fqdn | awk -F '.' '{print $(NF-1)}') # Single level domain
 		domainStringForFilename=$(echo $domain | tr . _)
-		sld=$(echo $fqdn | awk -F '.' '{print $(NF-1)}')
+
 		case $sld in
 #			facebook) siteVideoFormat=$(echo $initialSiteVideoFormat+m4a | \sed -E "s/^(\(?)\w+/\1bestvideo/g") ;;
 			*) siteVideoFormat=$initialSiteVideoFormat ;;
 		esac
 		formats=( $(echo $siteVideoFormat | \sed "s/,/ /g") )
 
-		echo "=> Fetching the generated destination filename(s) for \"$url\" ..."
-		errorLogFile="youtube-dl_errors_$$.log"
+		errorLogFile="${downloader}_errors_$$.log"
 		youtube_dl_FileNamePattern="%(title)s__%(format_id)s__%(id)s__$domainStringForFilename.%(ext)s"
-
 		jsonResults=null
 		ytdlExtraOptions=( "${ytdlInitialOptions[@]}" )
 		echo "$url" | grep -q /live$ && ytdlExtraOptions+=( --playlist-items 1 )
+		[ $downloader = yt-dlp ] && ytdlExtraOptions+=( --format-sort +proto )
 
-		jsonResults=$(time command youtube-dl --restrict-filenames -f "$siteVideoFormat" -o "${youtube_dl_FileNamePattern}" -j "${ytdlExtraOptions[@]}" -- "$url" 2>$errorLogFile | $jq -r .)
+		printf "=> Fetching the generated destination filename(s) for \"$url\" with ${effects[bold]}${colors[blue]}$downloader$normal at %s ...\n" "$(LC_MESSAGES=en date)"
+		jsonResults=$(time videoDownloader --restrict-filenames -f "$siteVideoFormat" -o "${youtube_dl_FileNamePattern}" -j "${ytdlExtraOptions[@]}" -- "$url" 2>$errorLogFile | $jq -r .)
+		# ytdlExtraOptions+= ( --exec 'basename %(filepath)s .%(ext)s' --write-info-json )
+		# jsonFileList=$(egrep -v "^(Deleting |\[)|\[download\]" ytdlpOutput.txt | sed -z "s/\n/.info.json /g")
 		formatsIDs=( $(echo "$jsonResults" | $jq -r .format_id | awk '!seen[$0]++') ) # Remove duplicate lines i.e: https://stackoverflow.com/a/1444448/5649639
 		echo
 
@@ -120,44 +148,90 @@ getRestrictedFilenamesFORMAT () {
 			let j++
 			let numberOfFilesToDownload=$numberOfURLsToDownload*${#formatsIDs[@]}
 			$undebug
-			fileName=$(echo "$jsonResults"  | $jq -n -r "first(inputs | select(.format_id==\"$formatID\"))._filename")
-			extension=$(echo "$jsonResults" | $jq -n -r "first(inputs | select(.format_id==\"$formatID\")).ext")
-			thumbnailURL=$(echo "$jsonResults" | $jq -n -r "first(inputs | select(.format_id==\"$formatID\")).thumbnail")
-			formatString=$(echo "$jsonResults"  | $jq -n -r "first(inputs | select(.format_id==\"$formatID\")).format")
-			chosenFormatID=$(echo "$jsonResults"  | $jq -n -r "first(inputs | select(.format_id==\"$formatID\")).format_id")
-			streamDirectURL="$(echo "$jsonResults"  | $jq -n -r "first(inputs | select(.format_id==\"$formatID\")).url")"
-			remoteFileSize=$(echo "$jsonResults" | $jq -n -r "first(inputs | select(.format_id==\"$formatID\")).filesize" | sed "s/null/-1/")
-			isLIVE=$(echo "$jsonResults" | $jq -n -r "first(inputs | select(.format_id==\"$formatID\")).is_live")
+
+			videoFormatID=${formatID/+*}
+
+			jsonHeaders=$(echo "$jsonResults" | $jq -r 'del(.formats, .thumbnails, .automatic_captions, .requested_subtitles)')
+			# Extraction d'infos pour le(s) format(s) selectionne(s)
+			fileName=$(echo "$jsonHeaders" | $jq -n -r "first(inputs | select(.format_id==\"$formatID\"))._filename")
+			extension=$(echo "$jsonHeaders"| $jq -n -r "first(inputs | select(.format_id==\"$formatID\")).ext")
+			formatString=$(echo "$jsonHeaders" | $jq -n -r "first(inputs | select(.format_id==\"$formatID\")).format")
+			chosenFormatID=$(echo "$jsonHeaders" | $jq -n -r "first(inputs | select(.format_id==\"$formatID\")).format_id")
+			remoteFileSize=$(echo "$jsonHeaders" | $jq -n -r "first(inputs | select(.format_id==\"$formatID\")).filesize" | sed "s/null/-1/")
+			acodec=$(echo "$jsonHeaders" | $jq -n -r "first(inputs | select(.format_id==\"$formatID\")).acodec")
+			acodec=$(echo $acodec | cut -d. -f1)
+			protocolForDownload=$(echo "$jsonResults" | $jq -n -r "first(inputs | select(.format_id==\"$videoFormatID\")).protocol")
+
+			# Les resultats ci-dessous ne dependent pas du format selectionne
+			isLIVE=$(echo "$jsonHeaders" | $jq -n -r 'first(inputs | .is_live)')
+			title=$(echo "$jsonHeaders" | $jq -n -r 'first(inputs | .title)')
+			webpage_url=$(echo "$jsonHeaders" | $jq -n -r 'first(inputs | .webpage_url)')
+			duration=$(echo "$jsonHeaders" | $jq -n -r 'first(inputs | .duration)')
+			thumbnailURL=$(echo "$jsonHeaders" | $jq -n -r 'first(inputs | .thumbnail)')
+
+			uploader_id=$(echo "$jsonHeaders" | $jq -n -r 'first(inputs | .uploader_id)')
+			channel_id=$(echo "$jsonHeaders" | $jq -n -r 'first(inputs | .channel_id)')
+			channel_url=$(echo "$jsonHeaders" | $jq -n -r 'first(inputs | .channel_url)')
+			uploader_url=$(echo "$jsonHeaders" | $jq -n -r 'first(inputs | .uploader_url)')
+			channelURL=$uploader_url
 
 			# To create an M3U file
-			IFS=$'\n' read -d "" duration webpage_url title <<< $(echo "$jsonResults"  | $jq -r '.duration, .webpage_url, .title')
-			duration=$($grep '^[0-9]*' <<< $duration || echo -1)
+			test -n "$playlistFileName" && duration=$($grep '^[0-9]*' <<< $duration || echo -1) && printf "#EXTINF:$duration,$title\n$webpage_url\n" >> "$playlistFileName"
 
-			test -n "$playlistFileName" && printf "#EXTINF:$duration,$title\n$webpage_url\n" >> "$playlistFileName"
+			if [ -z "$acodec" ] || [ $acodec = null ];then
+				# Preparing the User Agent for ffprobe
+				which chromium-browser>/dev/null 2>&1 && chromeVersion=$(chromium-browser --version 2>/dev/null | awk '{printf$2}') || chromeVersion="73.0.3671.2"
+				userAgent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/%s Safari/537.36"
+				userAgent="$(printf "$userAgent" $chromeVersion)"
+				echo "=> Fetching some information from remote stream with ffprobe ..."
+				if echo $chosenFormatID | \grep "[+]" -q;then
+					audioFormatID=$(echo $formatID | sed "s/.*+//")
+					# On utilise "$jsonResults" car on interroge TOUS les formats possibles contenus dans le tableau ".formats[]"
+					streamDirectURL="$(echo "$jsonResults" | $jq -n -r "first(inputs | .formats[] | select(.format_id==\"$audioFormatID\")).url")"
+				else
+					streamDirectURL="$(echo "$jsonHeaders" | $jq -n -r "first(inputs | select(.format_id==\"$formatID\")).url")"
+				fi
+				ffprobeJSON_Stream_Info=$(time $ffprobe -hide_banner -user_agent "$userAgent" -v error -show_format -show_streams -print_format json "$streamDirectURL")
 
-			ffprobeJSON_Stream_Info=$($ffprobe -hide_banner -v error -show_format -show_streams -print_format json "$streamDirectURL")
-			firstAudioStreamCodecName=$(echo "$ffprobeJSON_Stream_Info" | $jq -r '[ .streams[] | select(.codec_type=="audio") ][0].codec_name')
+				if [ $? = 0 ];then
+					firstAudioStreamCodecName=$(echo "$ffprobeJSON_Stream_Info" | $jq -r '[ .streams[] | select(.codec_type=="audio") ][0].codec_name')
+				else
+					echo $normal >&2
+					echo "${colors[red]}=> WARNING : Error fetching the <firstAudioStreamCodecName> with ffprobe on the remote direct stream.$normal" >&2
+					echo >&2
+					unset ffprobeJSON_Stream_Info firstAudioStreamCodecName
+				fi
+				echo
+			else
+				firstAudioStreamCodecName=$acodec
+			fi
 
 			thumbnailExtension=$(echo "${thumbnailURL/*\//}" | awk -F"[.]" '{print$2}')
-			[ -z "$thumbnailExtension" ] && thumbnailExtension=$(\curl -qs "$thumbnailURL" | file -bi - | awk -F ';' '{sub(".*/","",$1);print gensub("jpeg","jpg",1,$1)}')
-			[ -n "$thumbnailExtension" ] && artworkFileName=${fileName/.$extension/.$thumbnailExtension}
+			thumbnailExtension="${thumbnailExtension/\?*/}"
+			[ -z "$thumbnailExtension" ] && thumbnailExtension=$(\curl -Lqs "$thumbnailURL" | file -bi - | awk -F ';' '{sub(".*/","",$1);print gensub("jpeg","jpg",1,$1)}')
+			[ -n "$thumbnailExtension" ] && artworkFileName=${fileName/%.$extension/.$thumbnailExtension}
 
-			[ "$debug" ] && echo "=> chosenFormatID = <$chosenFormatID>  fileName = <$fileName>  extension = <$extension>  isLIVE = <$isLIVE>  formatString = <$formatString> thumbnailURL = <$thumbnailURL> artworkFileName = <$artworkFileName>  firstAudioStreamCodecName = <$firstAudioStreamCodecName> webpage_url = <$webpage_url> title = <$title> duration = <$duration>" && echo
+			[ "$debug" ] && echo "=> chosenFormatID = <${effects[bold]}${colors[blue]}$chosenFormatID$normal> acodec = <$acodec> fileName = <$fileName> extension = <$extension> isLIVE = <$isLIVE> formatString = <$formatString> thumbnailURL = <$thumbnailURL> thumbnailExtension = <$thumbnailExtension> artworkFileName = <$artworkFileName> firstAudioStreamCodecName = <$firstAudioStreamCodecName> webpage_url = <$webpage_url> title = <$title> duration = <$duration>" && echo
 
-			if [ $thumbnailerName = AtomicParsley ] && ! \curl -qs "$thumbnailURL" | file -b - | $grep -q JFIF;then #Because of https://bitbucket.org/wez/atomicparsley/issues/63
-				if \curl -qs "$thumbnailURL" -o "$artworkFileName.tmp";then
-					echo "=> Converting <$artworkFileName> to JPEG JFIF for AtomicParsley ..."
-					echo
-					convert -verbose "$artworkFileName.tmp" "$artworkFileName" && rm -f "$artworkFileName.tmp"
-					echo
-					echo "=> Done."
-					echo
+			if [ $thumbnailerName = AtomicParsley ];then
+				thumbnailFormatString=$(\curl -Lqs "$thumbnailURL" | file -b -)
+				if echo $thumbnailFormatString | $grep -q JPEG && ! echo $thumbnailFormatString | $grep -q JFIF;then
+					#Because of https://bitbucket.org/wez/atomicparsley/issues/63
+					echo "${effects[bold]}${colors[blue]}=> WARNING: The remote thumbnail is not JFIF compliant, downloading it to convert it to JPEG JFIF ...$normal"
+					if \curl -qLs "$thumbnailURL" -o "$artworkFileName.tmp";then
+						echo "=> Converting <$artworkFileName> to JPEG JFIF for AtomicParsley ..."
+						convert "$artworkFileName.tmp" "$artworkFileName" && rm -f "$artworkFileName.tmp"
+						echo "=> Done."
+						echo
+						[ "$debug" ] && file "$artworkFileName"
+						[ "$debug" ] && ls -l --time-style=+'%Y-%m-%d %T' "$artworkFileName"
+						echo
+					fi
 				fi
 			fi
 
-			echo $formatString | $grep -v '+' | $grep -q "audio only" && ytdlExtraOptions+=( -x )
-
-			if echo "${ytdlExtraOptions[@]}" | $grep -qw -- "-x";then
+			echo $formatString | $grep -v '+' | $grep "audio only" -q && ytdlExtraOptions+=( -x )
+			if echo "${ytdlExtraOptions[@]}" | $grep -w "\-x" -q;then
 				extension=$(getAudioExtension $firstAudioStreamCodecName) || continue
 				( [ $extension = m4a ] || [ $extension = opus ] ) && ytdlExtraOptions+=( -k )
 				newFileName="${fileName/.*/.$extension}"
@@ -168,13 +242,12 @@ getRestrictedFilenamesFORMAT () {
 			[ "$debug" ] && echo "=> newFileName = <$newFileName>" && echo
 
 			[ $isLIVE = true ] && url="$webpage_url"
-			echo "=> Downloading <$url> using the <$chosenFormatID> $sld format ..."
+			echo "=> Downloading <$url> using the <${effects[bold]}${colors[blue]}$chosenFormatID$normal> $sld format ..."
 			echo
 
 			ytdlExtraOptions+=( --add-metadata --prefer-ffmpeg --restrict-filenames --embed-subs --write-auto-sub --sub-lang='en,fr,es,de' )
 			if [ $isLIVE = true ];then
 				ytdlExtraOptions+=( --hls-use-mpegts --hls-prefer-ffmpeg )
-#				ytdlExtraOptions+=( --hls-use-mpegts )
 			else
 				ytdlExtraOptions+=( --hls-prefer-native )
 			fi
@@ -200,12 +273,12 @@ getRestrictedFilenamesFORMAT () {
 
 			echo "=> Downloading file # $j/$numberOfFilesToDownload ..."
 			echo
-			printf "=> Starting youtube-dl at %s ...\n" "$(LC_MESSAGES=en date)"
+			printf "=> Starting $downloader at %s ...\n" "$(LC_MESSAGES=en date)"
 			echo
-			errorLogFile="youtube-dl_errors_$$.log"
+			errorLogFile="${downloader}_errors_$$.log"
 			trap - INT
 			$debug
-			time LANG=C.UTF-8 command youtube-dl -v --ignore-config -o "$fileName" -f "$chosenFormatID" "${ytdlExtraOptions[@]}" "$url" $embedThumbnail 2>$errorLogFile
+			time videoDownloader -v --ignore-config -o "$fileName" -f "$chosenFormatID" "${ytdlExtraOptions[@]}" "$url" $embedThumbnail 2>$errorLogFile
 			downloadOK=$?
 			$undebug
 			sync
@@ -222,7 +295,7 @@ getRestrictedFilenamesFORMAT () {
 			if [ $fileSizeOnFS -ge $remoteFileSize ] || [ $downloadOK = 0 ]; then
 				addThumbnail2media "$fileName" "$artworkFileName"
 			else
-				time LANG=C.UTF-8 command youtube-dl -o $fileName -f "$chosenFormatID" "$url" 2>$errorLogFile
+				time videoDownloader -o $fileName -f "$chosenFormatID" "$url" 2>$errorLogFile
 				downloadOK=$?
 				echo
 
@@ -233,9 +306,15 @@ getRestrictedFilenamesFORMAT () {
 			if [ $downloadOK = 0 ]; then
 				ffprobeJSON_File_Info=$($ffprobe -v error -show_format -show_streams -print_format json "$fileName")
 				videoContainer=$(echo $ffprobeJSON_File_Info | $jq -r .format.format_name | cut -d, -f1)
+				videoContainersList=$(echo $ffprobeJSON_File_Info | $jq -r .format.format_name)
 
 				if [ $videoContainer = mov ];then
-					addURL2mp4Metadata "$fileName" "$url"
+					if [ $channelURL = null ];then
+						addURLs2mp4Metadata "$url" "$fileName"
+					else
+						addURLs2mp4Metadata "$url
+Channel URL : $channelURL" "$fileName"
+					fi
 					subTitleExtension=vtt
 				elif [ $videoContainer = matroska ];then
 					subTitleExtension=srt
@@ -243,6 +322,7 @@ getRestrictedFilenamesFORMAT () {
 
 				[ $extension = m4a ] && \ls "${fileName/.*/}".*.$subTitleExtension >/dev/null 2>&1  && addSubtitles2media "$fileName" "${fileName/.*/}".*.$subTitleExtension
 				df -T . | awk '{print$2}' | egrep -q "fuseblk|vfat" || chmod -w "$fileName"
+				echo
 				videoInfo.sh "$fileName"
 			fi
 		done
@@ -272,14 +352,14 @@ getAudioExtension () {
 	local audioExtension=unknown
 
 	if [ $BASH_VERSINFO -ge 4 ];then
-		declare -A audioExtension=( [libspeex]=spx [speex]=spx [opus]=opus [vorbis]=ogg [aac]=m4a [mp3]=mp3 [mp2]=mp2 [ac3]=ac3 [wmav2]=wma [pcm_dvd]=wav [pcm_s16le]=wav )
+		declare -A audioExtension=( [libspeex]=spx [speex]=spx [opus]=opus [vorbis]=ogg [aac]=m4a [mp4a]=m4a [mp3]=mp3 [mp2]=mp2 [ac3]=ac3 [wmav2]=wma [pcm_dvd]=wav [pcm_s16le]=wav )
 		audioExtension=${audioExtension[$acodec]}
 	else
 		case $acodec in
 			libspeex|speex) audioExtension=spx;;
 			opus|mp2|mp3|ac3) audioExtension=$acodec;;
 			vorbis) audioExtension=ogg;;
-			aac) audioExtension=m4a;;
+			aac|mp4a) audioExtension=m4a;;
 			wmav2) audioExtension=wma;;
 			pcm_dvd|pcm_s16le) audioExtension=wav;;
 			*) audioExtension=unknown;;
@@ -287,40 +367,53 @@ getAudioExtension () {
 	fi
 	echo $audioExtension
 }
-addURL2mp4Metadata() {
+addURLs2mp4Metadata() {
 	if [ $# != 2 ];then
-		echo "=> Usage: $FUNCNAME mediaFile url" 1>&2
+		echo "=> Usage: $FUNCNAME url mediaFile" 1>&2
 		exit 1
 	fi
 
-	local fileName=$1
-	local url=$2
-	local extension="${fileName/*./}"
-	local outputVideo="${fileName/.$extension/_NEW.$extension}"
+	local url="$1"
+	local fileName=$2
+	local retCode=-1
+	local timestampFileRef=$(mktemp)
+	touch -r "$fileName" $timestampFileRef
+	if which ffmpeg >/dev/null 2>&1;then
+		local extension="${fileName/*./}"
+		local outputVideo="${fileName/.$extension/_NEW.$extension}"
 
-	local ffmpeg="$(which ffmpeg)"
-	local ffprobe="$(which ffprobe)"
-	ffmpeg+=" -hide_banner"
-	ffprobe+=" -hide_banner"
-	local jq="$(which jq)"
+		local ffmpeg="$(which ffmpeg)"
+		local ffprobe="$(which ffprobe)"
+		ffmpeg+=" -hide_banner"
+		ffprobe+=" -hide_banner"
+		local jq="$(which jq)"
 
-	local ffmpegNormalLogLevel=repeat+error
-	local ffmpegInfoLogLevel=repeat+info
-	local ffmpegLogLevel=$ffmpegNormalLogLevel
+		local ffmpegNormalLogLevel=repeat+error
+		local ffmpegInfoLogLevel=repeat+info
+		local ffmpegLogLevel=$ffmpegNormalLogLevel
 
-	local ffprobeJSON_File_Info=$($ffprobe -v error -show_format -show_streams -print_format json "$fileName")
-	local videoContainer=$(echo $ffprobeJSON_File_Info | $jq -r .format.format_name | cut -d, -f1)
+		local ffprobeJSON_File_Info=$($ffprobe -v error -show_format -show_streams -print_format json "$fileName")
+		local videoContainer=$(echo $ffprobeJSON_File_Info | $jq -r .format.format_name | cut -d, -f1)
 
-	if [ $videoContainer = mov ] || [ $videoContainer = mp3 ];then
-		metadataURLFieldName=description
-	elif [ $videoContainer = matroska ];then
-		metadataURLFieldName=PURL
+		if [ $videoContainer = mov ] || [ $videoContainer = mp3 ];then
+			metadataURLFieldName=description
+		elif [ $videoContainer = matroska ];then
+			metadataURLFieldName=PURL
+		fi
+
+		echo "[ffmpeg] Adding '$url' to '$fileName' description metadata"
+		time $ffmpeg -loglevel $ffmpegLogLevel -i "$fileName" -map 0 -c copy -metadata $metadataURLFieldName="$url" "$outputVideo"
+		retCode=$?
+		[ $retCode = 0 ] && sync && \mv -f "$outputVideo" "$fileName"
+	elif which mp4tags >/dev/null 2>&1;then
+		echo "[mp4tags] Adding '$url' to '$fileName' description metadata"
+		time mp4tags -m "$url" "$fileName"
+		retCode=$?
 	fi
 
-	echo "[ffmpeg] Adding '$url' to '$fileName' metadata"
-	$ffmpeg -loglevel $ffmpegLogLevel -i "$fileName" -map 0 -c copy -metadata $metadataURLFieldName="$url" "$outputVideo"
-	retCode=$?
-	[ $retCode = 0 ] && sync && touch -r "$fileName" "$outputVideo" && \mv -f "$outputVideo" "$fileName"
+	[ $retCode = 0 ] && touch -r $timestampFileRef "$fileName"
+	\rm $timestampFileRef
+	return $retCode
 }
 function addSubtitles2media {
 	local inputVideo=$1
@@ -386,6 +479,7 @@ addThumbnail2media() {
 	local latestVideoStreamCodecName=$(echo $ffprobeJSON_File_Info | $jq -r '[ .streams[] | select(.codec_type=="video") ][-1].codec_name')
 
 	local major_brand=$(echo $ffprobeJSON_File_Info | $jq -r .format.tags.major_brand)
+	local retCode=0
 
 	[ "$debug" ] && echo "=> videoContainer = <$videoContainer>  latestVideoStreamCodecName = <$latestVideoStreamCodecName> major_brand = <$major_brand>" && echo
 
@@ -444,7 +538,7 @@ function getRestrictedFilenamesFHD {
 function getRestrictedFilenamesHD {
 	local height=720
 	local other_Formats=hd/high
-	local possibleFormats="bestvideo[ext=mp4][height<=?$height]+bestaudio[ext=m4a]/$other_Formats/best[ext=mp4][height<=?$height]"
+	local possibleFormats="22/bestvideo[ext=mp4][height<=?$height]+bestaudio[ext=m4a]/$other_Formats/best[ext=mp4][height<=?$height]"
 	getRestrictedFilenamesFORMAT "($possibleFormats/$bestFormats)" $@ # because of the "eval" statement in the "youtube_dl" bash variable
 }
 function getRestrictedFilenamesHQ {
@@ -462,7 +556,7 @@ function getRestrictedFilenamesFSD {
 function getRestrictedFilenamesSD {
 	local height=360
 	local other_Formats=low/sd/std
-	local possibleFormats="bestvideo[ext=mp4][height<=?$height]+bestaudio[ext=m4a]/$other_Formats/best[ext=mp4][height<=?$height]"
+	local possibleFormats="18/bestvideo[ext=mp4][height<=?$height]+bestaudio[ext=m4a]/$other_Formats/best[ext=mp4][height<=?$height]"
 	getRestrictedFilenamesFORMAT "($possibleFormats/$bestFormats)" $@ # because of the "eval" statement in the "youtube_dl" bash variable
 }
 function getRestrictedFilenamesLD {
