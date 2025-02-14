@@ -42,7 +42,7 @@ function main {
 	echo "$bold${color[red]}=> INFO: Starting <$(basename $0)>...$normal"
 
 	#if $(which netcat) -v -z -w 5 $remotePC ssh
-	if time $(which bash) -c ": < /dev/tcp/$remotePC/ssh"
+	if time $(which bash) -c "< /dev/tcp/$remotePC/ssh"
 	then
 		local syncCommand="rsync -vuth -P -m -rl"
 		echo "=> syncCommand = $syncCommand"
